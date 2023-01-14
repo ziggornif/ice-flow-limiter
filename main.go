@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/throttled/throttled/v2"
 	"github.com/throttled/throttled/v2/store/memstore"
 	"gopkg.in/yaml.v3"
@@ -9,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -17,6 +20,7 @@ type GatewayItem struct {
 	Backend      string `yaml:"backend"`
 	MaxReqPerSec int    `yaml:"reqsPerSec"`
 	MaxBurst     int    `yaml:"burst"`
+	Label        string `yaml:"label"`
 }
 
 type Configuration struct {
@@ -25,11 +29,43 @@ type Configuration struct {
 	Port    string        `yaml:"port"`
 }
 
-func RPHandler(backend string, frontend string) func(w http.ResponseWriter, r *http.Request) {
+type ResponseTime struct {
+	responseTimeHistogram *prometheus.HistogramVec
+}
+
+func (resp *ResponseTime) Collect(method string, route string, code string, responseTime float64) {
+	resp.responseTimeHistogram.With(prometheus.Labels{
+		"method": method,
+		"route":  route,
+		"code":   code,
+	}).Observe(responseTime)
+}
+
+func NewResponseTime(label string) *ResponseTime {
+	responseTimeHistogram := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    fmt.Sprintf("%s_http_request_duration_ms", label),
+		Help:    fmt.Sprintf("Duration of HTTP requests received by the %s endpoint in ms", label),
+		Buckets: []float64{.1, 5, 15, 50, 100, 200, 300, 400, 500, 1000},
+	}, []string{"method", "route", "code"})
+	prometheus.MustRegister(responseTimeHistogram)
+	return &ResponseTime{
+		responseTimeHistogram,
+	}
+}
+
+func RPHandler(backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		if requestTotalCounter != nil {
+			requestTotalCounter.Inc()
+		}
+
 		req, err := http.NewRequest(r.Method, backend, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if responseTimeCollector != nil {
+				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(time.Since(start).Milliseconds()))
+			}
 			return
 		}
 
@@ -42,6 +78,9 @@ func RPHandler(backend string, frontend string) func(w http.ResponseWriter, r *h
 		resp, err := client.Do(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if responseTimeCollector != nil {
+				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(time.Since(start).Milliseconds()))
+			}
 			return
 		}
 		defer resp.Body.Close()
@@ -53,11 +92,17 @@ func RPHandler(backend string, frontend string) func(w http.ResponseWriter, r *h
 
 		if _, err := io.Copy(w, resp.Body); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if responseTimeCollector != nil {
+				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(time.Since(start).Milliseconds()))
+			}
+		}
+		if responseTimeCollector != nil {
+			responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusOK), float64(time.Since(start).Milliseconds()))
 		}
 	}
 }
 
-func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayItem) {
+func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayItem, metrics bool) {
 	for _, i := range items {
 		quota := throttled.RateQuota{MaxRate: throttled.PerSec(i.MaxReqPerSec), MaxBurst: i.MaxBurst}
 		rateLimiter, err := throttled.NewGCRARateLimiter(store, quota)
@@ -70,7 +115,18 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 			VaryBy:      &throttled.VaryBy{Path: true},
 		}
 
-		mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Backend, i.Frontend))))
+		if metrics {
+			requestTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+				Name: fmt.Sprintf("%s_requests_total", i.Label),
+				Help: fmt.Sprintf("The total number of requests received by the %s endpoint.", i.Label),
+			})
+			prometheus.MustRegister(requestTotalCounter)
+			responseTimeCollector := NewResponseTime(i.Label)
+
+			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Backend, requestTotalCounter, responseTimeCollector))))
+		} else {
+			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Backend, nil, nil))))
+		}
 	}
 }
 
@@ -94,7 +150,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	LoadGateway(mux, store, config.Routes)
+	LoadGateway(mux, store, config.Routes, config.Metrics)
+
+	if config.Metrics {
+		mux.Handle("/metrics", promhttp.Handler())
+	}
 
 	srv := &http.Server{
 		Handler:      mux,
