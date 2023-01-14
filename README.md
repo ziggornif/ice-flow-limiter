@@ -1,5 +1,7 @@
 # ice-flow-limiter
 
+**🔧 WORK IN PROGRESS 🔧**
+
 This project is a simple reverse proxy server that offers rate limiting for each route.
 
 ## Configuration

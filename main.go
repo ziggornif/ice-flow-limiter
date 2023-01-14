@@ -2,17 +2,19 @@ package main
 
 import (
 	"fmt"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/throttled/throttled/v2"
-	"github.com/throttled/throttled/v2/store/memstore"
-	"gopkg.in/yaml.v3"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
+	"github.com/throttled/throttled/v2"
+	"github.com/throttled/throttled/v2/store/memstore"
+	"gopkg.in/yaml.v3"
 )
 
 type GatewayItem struct {
@@ -53,8 +55,15 @@ func NewResponseTime(label string) *ResponseTime {
 	}
 }
 
-func RPHandler(backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime) func(w http.ResponseWriter, r *http.Request) {
+func RPHandler(label string, backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		logrus.WithFields(logrus.Fields{
+			"label":      label,
+			"method":     r.Method,
+			"uri":        r.RequestURI,
+			"user-agent": r.UserAgent(),
+		}).Info("Incoming call")
+
 		start := time.Now()
 		if requestTotalCounter != nil {
 			requestTotalCounter.Inc()
@@ -123,14 +132,16 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 			prometheus.MustRegister(requestTotalCounter)
 			responseTimeCollector := NewResponseTime(i.Label)
 
-			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Backend, requestTotalCounter, responseTimeCollector))))
+			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector))))
 		} else {
-			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Backend, nil, nil))))
+			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, nil, nil))))
 		}
 	}
 }
 
 func main() {
+	logrus.SetFormatter(&logrus.JSONFormatter{})
+
 	var config Configuration
 
 	data, err := os.ReadFile("rockhopper.yaml")
