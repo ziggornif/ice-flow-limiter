@@ -4,23 +4,29 @@ import (
 	"fmt"
 	"github.com/throttled/throttled/v2"
 	"github.com/throttled/throttled/v2/store/memstore"
+	"gopkg.in/yaml.v3"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
 type GatewayItem struct {
-	Frontend     string
-	Backend      string
-	MaxReqPerSec int
-	MaxBurst     int
+	Frontend     string `yaml:"frontend"`
+	Backend      string `yaml:"backend"`
+	MaxReqPerSec int    `yaml:"reqsPerSec"`
+	MaxBurst     int    `yaml:"burst"`
+}
+
+type Configuration struct {
+	Routes  []GatewayItem `yaml:"routes"`
+	Metrics bool          `yaml:"metrics"`
+	Port    string        `yaml:"port"`
 }
 
 func RPHandler(backend string, frontend string) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("FRONT", frontend)
-		fmt.Println("Request URI", r.RequestURI)
 		req, err := http.NewRequest(r.Method, backend, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -69,7 +75,17 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 }
 
 func main() {
-	fmt.Println("Hello penguins ! 🐧")
+	var config Configuration
+
+	data, err := os.ReadFile("rockhopper.yaml")
+	if err != nil {
+		log.Fatal("readfile err", err)
+	}
+
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		log.Fatal("unmarshal err", err)
+	}
 
 	mux := http.NewServeMux()
 
@@ -78,29 +94,19 @@ func main() {
 		log.Fatal(err)
 	}
 
-	items := []GatewayItem{
-		{
-			Frontend:     "/tweets",
-			Backend:      "http://localhost:8888/tweets",
-			MaxReqPerSec: 10,
-			MaxBurst:     5,
-		},
-		{
-			Frontend:     "/signin",
-			Backend:      "http://localhost:8888/signin",
-			MaxReqPerSec: 1,
-			MaxBurst:     0,
-		},
-	}
-
-	LoadGateway(mux, store, items)
+	LoadGateway(mux, store, config.Routes)
 
 	srv := &http.Server{
 		Handler:      mux,
-		Addr:         "127.0.0.1:8000",
+		Addr:         fmt.Sprintf("127.0.0.1:%s", config.Port),
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
 
+	fmt.Printf("🐧 ice-flow-limiter service is running http://127.0.0.1:%s\n", config.Port)
+	fmt.Println("Loaded routes :")
+	for _, i := range config.Routes {
+		fmt.Printf("http://127.0.0.1:%s%s => %s - ratelimit: %v - burst: %v\n", config.Port, i.Frontend, i.Backend, i.MaxReqPerSec, i.MaxBurst)
+	}
 	log.Fatal(srv.ListenAndServe())
 }

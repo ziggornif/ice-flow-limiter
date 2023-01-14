@@ -1,0 +1,11 @@
+routes:
+  - frontend: "/tweets"
+    backend: "http://localhost:8888/tweets"
+    reqsPerSec: 10
+    burst: 5
+  - frontend: "/signin"
+    backend: "http://localhost:8888/signin"
+    reqsPerSec: 1
+    burst: 0
+metrics: false
+port: 8000
