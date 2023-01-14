@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kataras/requestid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
@@ -57,11 +58,13 @@ func NewResponseTime(label string) *ResponseTime {
 
 func RPHandler(label string, backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		id := requestid.Get(r)
 		logrus.WithFields(logrus.Fields{
 			"label":      label,
 			"method":     r.Method,
 			"uri":        r.RequestURI,
 			"user-agent": r.UserAgent(),
+			"requestid":  id,
 		}).Info("Incoming call")
 
 		start := time.Now()
@@ -105,8 +108,17 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(time.Since(start).Milliseconds()))
 			}
 		}
+
+		execTime := time.Since(start)
+		logrus.WithFields(logrus.Fields{
+			"label":      label,
+			"method":     r.Method,
+			"uri":        r.RequestURI,
+			"user-agent": r.UserAgent(),
+			"requestid":  id,
+		}).Infof("Execution time %v", execTime)
 		if responseTimeCollector != nil {
-			responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusOK), float64(time.Since(start).Milliseconds()))
+			responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusOK), float64(execTime.Milliseconds()))
 		}
 	}
 }
@@ -168,7 +180,7 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Handler:      mux,
+		Handler:      requestid.Handler(mux),
 		Addr:         fmt.Sprintf("127.0.0.1:%s", config.Port),
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
