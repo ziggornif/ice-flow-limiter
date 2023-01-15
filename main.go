@@ -75,8 +75,17 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 		req, err := http.NewRequest(r.Method, backend, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			execTime := time.Since(start)
+			logrus.WithFields(logrus.Fields{
+				"label":          label,
+				"method":         r.Method,
+				"uri":            r.RequestURI,
+				"user-agent":     r.UserAgent(),
+				"requestid":      id,
+				"execution-time": execTime,
+			}).Errorf("Execution error %v", err.Error())
 			if responseTimeCollector != nil {
-				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(time.Since(start).Milliseconds()))
+				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(execTime.Milliseconds()))
 			}
 			return
 		}
@@ -90,8 +99,17 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 		resp, err := client.Do(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			execTime := time.Since(start)
+			logrus.WithFields(logrus.Fields{
+				"label":          label,
+				"method":         r.Method,
+				"uri":            r.RequestURI,
+				"user-agent":     r.UserAgent(),
+				"requestid":      id,
+				"execution-time": execTime,
+			}).Errorf("Execution error %v", err.Error())
 			if responseTimeCollector != nil {
-				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(time.Since(start).Milliseconds()))
+				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(execTime.Milliseconds()))
 			}
 			return
 		}
@@ -104,8 +122,17 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 
 		if _, err := io.Copy(w, resp.Body); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			execTime := time.Since(start)
+			logrus.WithFields(logrus.Fields{
+				"label":          label,
+				"method":         r.Method,
+				"uri":            r.RequestURI,
+				"user-agent":     r.UserAgent(),
+				"requestid":      id,
+				"execution-time": execTime,
+			}).Errorf("Execution error %v", err.Error())
 			if responseTimeCollector != nil {
-				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(time.Since(start).Milliseconds()))
+				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusInternalServerError), float64(execTime.Milliseconds()))
 			}
 		}
 
