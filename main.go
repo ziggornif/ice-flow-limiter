@@ -6,7 +6,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kataras/requestid"
@@ -163,35 +165,46 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 		var requestDeniedCounter prometheus.Counter
 		var responseTimeCollector *ResponseTime
 
-		quota := throttled.RateQuota{MaxRate: throttled.PerSec(i.MaxReqPerSec), MaxBurst: i.MaxBurst}
-		rateLimiter, err := throttled.NewGCRARateLimiter(store, quota)
-		if err != nil {
-			log.Fatal(err)
-		}
-
 		if metrics {
+			re, err := regexp.Compile(`\W`)
+			if err != nil {
+				log.Fatal(err)
+			}
+			transformed := re.ReplaceAllString(i.Label, "")
+			metricLabel := strings.ToLower(transformed)
+
 			requestTotalCounter = prometheus.NewCounter(prometheus.CounterOpts{
-				Name: fmt.Sprintf("%s_requests_total", i.Label),
-				Help: fmt.Sprintf("The total number of requests received by the %s endpoint.", i.Label),
+				Name: fmt.Sprintf("%s_requests_total", metricLabel),
+				Help: fmt.Sprintf("The total number of requests received by the %s endpoint.", metricLabel),
 			})
 			prometheus.MustRegister(requestTotalCounter)
 
 			requestDeniedCounter = prometheus.NewCounter(prometheus.CounterOpts{
-				Name: fmt.Sprintf("%s_requests_denied", i.Label),
-				Help: fmt.Sprintf("The total number of denied requests received by the %s endpoint.", i.Label),
+				Name: fmt.Sprintf("%s_requests_denied", metricLabel),
+				Help: fmt.Sprintf("The total number of denied requests received by the %s endpoint.", metricLabel),
 			})
 			prometheus.MustRegister(requestDeniedCounter)
 
-			responseTimeCollector = NewResponseTime(i.Label)
+			responseTimeCollector = NewResponseTime(metricLabel)
 		}
 
-		httpRateLimiter := throttled.HTTPRateLimiter{
-			RateLimiter:   rateLimiter,
-			VaryBy:        &throttled.VaryBy{Path: true},
-			DeniedHandler: DeniedHandler(requestDeniedCounter),
-		}
+		if i.MaxReqPerSec == 0 {
+			mux.Handle(i.Frontend, http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector)))
+		} else {
+			quota := throttled.RateQuota{MaxRate: throttled.PerSec(i.MaxReqPerSec), MaxBurst: i.MaxBurst}
+			rateLimiter, err := throttled.NewGCRARateLimiter(store, quota)
+			if err != nil {
+				log.Fatal(err)
+			}
 
-		mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector))))
+			httpRateLimiter := throttled.HTTPRateLimiter{
+				RateLimiter:   rateLimiter,
+				VaryBy:        &throttled.VaryBy{Path: true},
+				DeniedHandler: DeniedHandler(requestDeniedCounter),
+			}
+
+			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector))))
+		}
 	}
 }
 

@@ -4,6 +4,10 @@ routes:
     label: "tweets"
     reqsPerSec: 10
     burst: 5
+  - frontend: "/tweets-unlimited"
+    backend: "http://localhost:8888/tweets"
+    label: "tweets-unlimited"
+    reqsPerSec: 0
   - frontend: "/signin"
     backend: "http://localhost:8888/signin"
     label: "signin"
