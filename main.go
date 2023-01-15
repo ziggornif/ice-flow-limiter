@@ -150,31 +150,48 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 	}
 }
 
+func DeniedHandler(requestDeniedCounter prometheus.Counter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestDeniedCounter.Inc()
+		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+	})
+}
+
 func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayItem, metrics bool) {
 	for _, i := range items {
+		var requestTotalCounter prometheus.Counter
+		var requestDeniedCounter prometheus.Counter
+		var responseTimeCollector *ResponseTime
+
 		quota := throttled.RateQuota{MaxRate: throttled.PerSec(i.MaxReqPerSec), MaxBurst: i.MaxBurst}
 		rateLimiter, err := throttled.NewGCRARateLimiter(store, quota)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		httpRateLimiter := throttled.HTTPRateLimiter{
-			RateLimiter: rateLimiter,
-			VaryBy:      &throttled.VaryBy{Path: true},
-		}
-
 		if metrics {
-			requestTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+			requestTotalCounter = prometheus.NewCounter(prometheus.CounterOpts{
 				Name: fmt.Sprintf("%s_requests_total", i.Label),
 				Help: fmt.Sprintf("The total number of requests received by the %s endpoint.", i.Label),
 			})
 			prometheus.MustRegister(requestTotalCounter)
-			responseTimeCollector := NewResponseTime(i.Label)
 
-			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector))))
-		} else {
-			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, nil, nil))))
+			requestDeniedCounter = prometheus.NewCounter(prometheus.CounterOpts{
+				Name: fmt.Sprintf("%s_requests_denied", i.Label),
+				Help: fmt.Sprintf("The total number of denied requests received by the %s endpoint.", i.Label),
+			})
+			prometheus.MustRegister(requestDeniedCounter)
+
+			responseTimeCollector = NewResponseTime(i.Label)
 		}
+
+		httpRateLimiter := throttled.HTTPRateLimiter{
+			RateLimiter:   rateLimiter,
+			VaryBy:        &throttled.VaryBy{Path: true},
+			DeniedHandler: DeniedHandler(requestDeniedCounter),
+		}
+
+		mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector))))
 	}
 }
 
