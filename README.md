@@ -75,3 +75,10 @@ tweets_http_request_duration_ms_bucket{code="200",method="GET",route="/tweets",l
 tweets_http_request_duration_ms_sum{code="200",method="GET",route="/tweets"} 11
 tweets_http_request_duration_ms_count{code="200",method="GET",route="/tweets"} 1
 ```
+
+## TODO
+- manage path / query params
+- IP blacklisting
+- query params filters
+- circuit breaker
+- redis / inmem rate limiter modes
