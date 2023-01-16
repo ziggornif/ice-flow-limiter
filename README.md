@@ -38,6 +38,43 @@ Loaded routes :
 http://127.0.0.1:8000/tweets => http://localhost:8888/tweets - ratelimit: 10 - burst: 5
 http://127.0.0.1:8000/signin => http://localhost:8888/signin - ratelimit: 1 - burst: 0
 ```
+
+## Query params filtering
+
+This config allows you to filter URL query params transmitted to the backend.
+
+In this example, only the `foo` query param will be sent to the backend.
+```yaml
+routes:
+  - frontend: "/tweets"
+    backend: "http://localhost:8888/tweets"
+    label: "tweets"
+    reqsPerSec: 10
+    burst: 5
+    queryParams:
+      - "foo"
+```
+
+**Important : without configuration all the query params are sent to the backend.**
+
+## Headers filtering
+
+This config allows you to filter request headers transmitted to the backend.
+
+In this example, only the `Content-Type` header will be sent to the backend.
+```yaml
+routes:
+  - frontend: "/signin"
+    backend: "http://localhost:8888/signin"
+    label: "signin"
+    reqsPerSec: 1
+    burst: 0
+    headers:
+      - "Content-Type"
+```
+
+**Important : without configuration all the request headers are sent to the backend.**
+
 ## IP filtering access
 
 ### Whitelist
