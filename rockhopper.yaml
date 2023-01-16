@@ -15,3 +15,8 @@ routes:
     burst: 0
 metrics: true
 port: 8000
+ip:
+  whitelist:
+  # blacklist:
+  - 192.168.86.70
+

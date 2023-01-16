@@ -20,6 +20,9 @@ routes:
     burst: 0
 metrics: false
 port: 8000
+ip:
+  whitelist|blacklist: # cannot be used at the same time
+  - 192.168.86.70
 ```
 
 ## Run
@@ -34,6 +37,33 @@ Output :
 Loaded routes :
 http://127.0.0.1:8000/tweets => http://localhost:8888/tweets - ratelimit: 10 - burst: 5
 http://127.0.0.1:8000/signin => http://localhost:8888/signin - ratelimit: 1 - burst: 0
+```
+## IP filtering access
+
+### Whitelist
+
+IP whitelist config allows you to define IP list of authorized callers.
+
+Requests coming from IPs not present in the table will be rejected.
+
+```yaml
+ip:
+  whitelist:
+  - x.x.x.x
+  - y.y.y.y
+```
+
+### Blacklist
+
+IP blacklist config allows you to define blocked IP list.
+
+Requests coming from IPs present in this table will be rejected.
+
+```yaml
+ip:
+  blacklist:
+  - x.x.x.x
+  - y.y.y.y
 ```
 
 ## Metrics
@@ -78,7 +108,7 @@ tweets_http_request_duration_ms_count{code="200",method="GET",route="/tweets"} 1
 
 ## TODO
 - [x] routes without rate limit
-- [ ] IP blacklisting
+- [x] IP blacklisting
 - [ ] routes path / query params
 - [ ] query params filters
 - [ ] circuit breaker

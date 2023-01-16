@@ -28,10 +28,16 @@ type GatewayItem struct {
 	Label        string `yaml:"label"`
 }
 
+type IpConfiguration struct {
+	Blacklist []string `yaml:"blacklist"`
+	Whitelist []string `yaml:"whitelist"`
+}
+
 type Configuration struct {
-	Routes  []GatewayItem `yaml:"routes"`
-	Metrics bool          `yaml:"metrics"`
-	Port    string        `yaml:"port"`
+	Routes  []GatewayItem   `yaml:"routes"`
+	Metrics bool            `yaml:"metrics"`
+	Port    string          `yaml:"port"`
+	Ip      IpConfiguration `yaml:"ip"`
 }
 
 type ResponseTime struct {
@@ -58,7 +64,33 @@ func NewResponseTime(label string) *ResponseTime {
 	}
 }
 
-func RPHandler(label string, backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime) func(w http.ResponseWriter, r *http.Request) {
+func ValidateConfig(config Configuration) error {
+	if len(config.Ip.Blacklist) > 0 && len(config.Ip.Whitelist) > 0 {
+		return fmt.Errorf("ip whitelisting and blacklisting cannot be used at the same time")
+	}
+
+	return nil
+}
+
+func isIPBlacklisted(ip string, ipConfig IpConfiguration) bool {
+	for _, blacklistedIP := range ipConfig.Blacklist {
+		if blacklistedIP == ip {
+			return true
+		}
+	}
+	return false
+}
+
+func isIPWhitelisted(ip string, ipConfig IpConfiguration) bool {
+	for _, blacklistedIP := range ipConfig.Whitelist {
+		if blacklistedIP == ip {
+			return true
+		}
+	}
+	return false
+}
+
+func RPHandler(label string, backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime, ipConfig IpConfiguration) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := requestid.Get(r)
 		logrus.WithFields(logrus.Fields{
@@ -72,6 +104,26 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 		start := time.Now()
 		if requestTotalCounter != nil {
 			requestTotalCounter.Inc()
+		}
+
+		ip := strings.Split(r.RemoteAddr, ":")[0]
+		fmt.Println(r.RemoteAddr)
+		if (len(ipConfig.Blacklist) > 0 && isIPBlacklisted(ip, ipConfig)) || (len(ipConfig.Whitelist) > 0 && !isIPWhitelisted(ip, ipConfig)) {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			execTime := time.Since(start)
+			logrus.WithFields(logrus.Fields{
+				"label":          label,
+				"method":         r.Method,
+				"uri":            r.RequestURI,
+				"user-agent":     r.UserAgent(),
+				"requestid":      id,
+				"execution-time": execTime,
+				"ip":             ip,
+			}).Errorf("Unauthorized IP %v", ip)
+			if responseTimeCollector != nil {
+				responseTimeCollector.Collect(r.Method, r.RequestURI, strconv.Itoa(http.StatusForbidden), float64(execTime.Milliseconds()))
+			}
+			return
 		}
 
 		req, err := http.NewRequest(r.Method, backend, r.Body)
@@ -159,7 +211,7 @@ func DeniedHandler(requestDeniedCounter prometheus.Counter) http.Handler {
 	})
 }
 
-func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayItem, metrics bool) {
+func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayItem, metrics bool, ipConfig IpConfiguration) {
 	for _, i := range items {
 		var requestTotalCounter prometheus.Counter
 		var requestDeniedCounter prometheus.Counter
@@ -189,7 +241,7 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 		}
 
 		if i.MaxReqPerSec == 0 {
-			mux.Handle(i.Frontend, http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector)))
+			mux.Handle(i.Frontend, http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector, ipConfig)))
 		} else {
 			quota := throttled.RateQuota{MaxRate: throttled.PerSec(i.MaxReqPerSec), MaxBurst: i.MaxBurst}
 			rateLimiter, err := throttled.NewGCRARateLimiter(store, quota)
@@ -203,7 +255,7 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 				DeniedHandler: DeniedHandler(requestDeniedCounter),
 			}
 
-			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector))))
+			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector, ipConfig))))
 		}
 	}
 }
@@ -223,6 +275,11 @@ func main() {
 		log.Fatal("unmarshal err", err)
 	}
 
+	err = ValidateConfig(config)
+	if err != nil {
+		log.Fatal("validation err", err)
+	}
+
 	mux := http.NewServeMux()
 
 	store, err := memstore.New(65536)
@@ -230,7 +287,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	LoadGateway(mux, store, config.Routes, config.Metrics)
+	LoadGateway(mux, store, config.Routes, config.Metrics, config.Ip)
 
 	if config.Metrics {
 		mux.Handle("/metrics", promhttp.Handler())
@@ -238,7 +295,7 @@ func main() {
 
 	srv := &http.Server{
 		Handler:      requestid.Handler(mux),
-		Addr:         fmt.Sprintf("127.0.0.1:%s", config.Port),
+		Addr:         fmt.Sprintf(":%s", config.Port),
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
