@@ -110,6 +110,7 @@ tweets_http_request_duration_ms_count{code="200",method="GET",route="/tweets"} 1
 - [x] routes without rate limit
 - [x] IP blacklisting
 - [ ] routes path / query params
-- [ ] query params filters
+- [x] query params filters
+- [x] headers filters
 - [ ] circuit breaker
 - [ ] redis / inmem rate limiter modes

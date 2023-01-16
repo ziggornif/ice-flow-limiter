@@ -4,6 +4,8 @@ routes:
     label: "tweets"
     reqsPerSec: 10
     burst: 5
+    queryParams:
+      - "foo"
   - frontend: "/tweets-unlimited"
     backend: "http://localhost:8888/tweets"
     label: "tweets-unlimited"
@@ -13,10 +15,12 @@ routes:
     label: "signin"
     reqsPerSec: 1
     burst: 0
+    headers:
+      - "Content-Type"
 metrics: true
 port: 8000
-ip:
-  whitelist:
+#ip:
+#  whitelist:
   # blacklist:
-  - 192.168.86.70
+#  - 192.168.86.70
 

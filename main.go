@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -21,11 +22,13 @@ import (
 )
 
 type GatewayItem struct {
-	Frontend     string `yaml:"frontend"`
-	Backend      string `yaml:"backend"`
-	MaxReqPerSec int    `yaml:"reqsPerSec"`
-	MaxBurst     int    `yaml:"burst"`
-	Label        string `yaml:"label"`
+	Frontend     string   `yaml:"frontend"`
+	Backend      string   `yaml:"backend"`
+	MaxReqPerSec int      `yaml:"reqsPerSec"`
+	MaxBurst     int      `yaml:"burst"`
+	Label        string   `yaml:"label"`
+	Headers      []string `yaml:"headers"`
+	QueryParams  []string `yaml:"queryParams"`
 }
 
 type IpConfiguration struct {
@@ -90,7 +93,20 @@ func isIPWhitelisted(ip string, ipConfig IpConfiguration) bool {
 	return false
 }
 
-func RPHandler(label string, backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime, ipConfig IpConfiguration) func(w http.ResponseWriter, r *http.Request) {
+func isParamAuthorized(param string, list []string) bool {
+	if len(list) == 0 {
+		return true
+	}
+
+	for _, p := range list {
+		if p == param {
+			return true
+		}
+	}
+	return false
+}
+
+func RPHandler(label string, backend string, requestTotalCounter prometheus.Counter, responseTimeCollector *ResponseTime, ipConfig IpConfiguration, headerFilter []string, queryParamsFilter []string) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := requestid.Get(r)
 		logrus.WithFields(logrus.Fields{
@@ -107,7 +123,7 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 		}
 
 		ip := strings.Split(r.RemoteAddr, ":")[0]
-		fmt.Println(r.RemoteAddr)
+
 		if (len(ipConfig.Blacklist) > 0 && isIPBlacklisted(ip, ipConfig)) || (len(ipConfig.Whitelist) > 0 && !isIPWhitelisted(ip, ipConfig)) {
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			execTime := time.Since(start)
@@ -126,7 +142,22 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 			return
 		}
 
-		req, err := http.NewRequest(r.Method, backend, r.Body)
+		// Manage query parms
+		backendUrl, err := url.Parse(backend)
+		if err != nil {
+			log.Fatal(err)
+		}
+		backendQuery := backendUrl.Query()
+		for k, v := range r.URL.Query() {
+			if isParamAuthorized(k, queryParamsFilter) {
+				for _, val := range v {
+					backendQuery.Add(k, val)
+				}
+			}
+		}
+		backendUrl.RawQuery = backendQuery.Encode()
+
+		req, err := http.NewRequest(r.Method, backendUrl.String(), r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			execTime := time.Since(start)
@@ -144,8 +175,11 @@ func RPHandler(label string, backend string, requestTotalCounter prometheus.Coun
 			return
 		}
 
+		// Manage headers
 		for k, v := range r.Header {
-			req.Header[k] = v
+			if isParamAuthorized(k, headerFilter) {
+				req.Header[k] = v
+			}
 		}
 
 		client := &http.Client{}
@@ -241,7 +275,7 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 		}
 
 		if i.MaxReqPerSec == 0 {
-			mux.Handle(i.Frontend, http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector, ipConfig)))
+			mux.Handle(i.Frontend, http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector, ipConfig, i.Headers, i.QueryParams)))
 		} else {
 			quota := throttled.RateQuota{MaxRate: throttled.PerSec(i.MaxReqPerSec), MaxBurst: i.MaxBurst}
 			rateLimiter, err := throttled.NewGCRARateLimiter(store, quota)
@@ -255,7 +289,7 @@ func LoadGateway(mux *http.ServeMux, store *memstore.MemStore, items []GatewayIt
 				DeniedHandler: DeniedHandler(requestDeniedCounter),
 			}
 
-			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector, ipConfig))))
+			mux.Handle(i.Frontend, httpRateLimiter.RateLimit(http.HandlerFunc(RPHandler(i.Label, i.Backend, requestTotalCounter, responseTimeCollector, ipConfig, i.Headers, i.QueryParams))))
 		}
 	}
 }
